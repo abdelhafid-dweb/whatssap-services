@@ -124,6 +124,34 @@ app.get("/whatsapp-status", (req, res) => {
     res.json({ connected: isConnected, authenticated: isAuthenticated, hasQR: !!lastQrCode, qr: lastQrCode });
 });
 
+/**
+ * NEW: Endpoint for detailed diagnostics
+ */
+app.get("/whatsapp-diagnose", async (req, res) => {
+    try {
+        const clientState = await client.getState();
+        res.json({
+            isConnected,
+            isAuthenticated,
+            isClientReady,
+            lastQrCode: !!lastQrCode,
+            clientState,
+            message: "This endpoint provides more detailed state information. The 'clientState' is the current state of the client according to the library itself."
+        });
+    } catch (err) {
+        console.error('❌ Error getting client state:', err.message);
+        res.status(500).json({
+            isConnected,
+            isAuthenticated,
+            isClientReady,
+            lastQrCode: !!lastQrCode,
+            clientState: 'error',
+            error: err.message,
+            message: "Could not retrieve client state. The client might be uninitialized."
+        });
+    }
+});
+
 // Function to safely destroy the client instance
 async function safeDestroy() {
     try {
@@ -141,6 +169,7 @@ app.post("/whatsapp-disconnect", async (req, res) => {
         await safeDestroy();
         isConnected = false;
         isAuthenticated = false;
+        isClientReady = false;
         lastQrCode = null;
         setTimeout(() => {
             client.initialize();
@@ -170,6 +199,7 @@ app.post('/whatsapp-clear-session', async (req, res) => {
         await safeDestroy();
         isConnected = false;
         isAuthenticated = false;
+        isClientReady = false;
         lastQrCode = null;
         client.initialize();
 
