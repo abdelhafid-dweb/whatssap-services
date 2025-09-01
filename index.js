@@ -26,7 +26,6 @@ let lastQrCode = null;
 let reconnecting = false;
 let connectionTimeout = null;
 
-
 // Initialize WhatsApp client with headless Puppeteer for container environments
 const client = new Client({
     authStrategy: new LocalAuth(),
@@ -40,7 +39,11 @@ const client = new Client({
             '--no-first-run',
             '--no-zygote',
             '--single-process',
-            '--disable-gpu'
+            '--disable-gpu',
+            // Arguments supplémentaires pour résoudre les problèmes de synchronisation et de performance dans les conteneurs
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--disk-cache-size=0'
         ]
     }
 });
@@ -67,6 +70,7 @@ client.on('ready', () => {
     isClientReady = true;
     isAuthenticated = true; // The client is also authenticated at this point
     lastQrCode = null;
+    if (connectionTimeout) clearTimeout(connectionTimeout);
     syncAllContacts();
     // Schedule periodic contact sync
     setInterval(syncAllContacts, 2 * 60 * 1000);
@@ -76,12 +80,12 @@ client.on('ready', () => {
 client.on('authenticated', () => {
     console.log('🔐 Successfully authenticated, waiting for client ready event...');
     isAuthenticated = true;
+    // Set a timeout to check if the client gets stuck after authentication
     connectionTimeout = setTimeout(() => {
         if (!isClientReady) {
-            console.warn('⚠️ Le client est bloqué après l\'authentification. Il se peut qu\'il y ait un problème de réseau ou un long délai de synchronisation.60 seconds');
+            console.warn('⚠️ Le client est bloqué après l\'authentification. Il se peut qu\'il y ait un problème de réseau ou un long délai de synchronisation.');
         }
     }, 60000); // 60 seconds
-    
 });
 
 // Event handler for authentication failure
@@ -146,6 +150,8 @@ app.post("/whatsapp-disconnect", async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
+// NEW ENDPOINT: Clear session files to force a new QR code login
 app.post('/whatsapp-clear-session', async (req, res) => {
     try {
         console.log('🗑️ Clearing WhatsApp session files...');
@@ -173,6 +179,8 @@ app.post('/whatsapp-clear-session', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
+
 // Django API URL
 const DJANGO_API_URL = 'https://ts.travel4you.ma/api/receive-message/';
 
