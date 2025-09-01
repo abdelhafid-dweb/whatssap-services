@@ -100,7 +100,13 @@ client.on('disconnected', reason => {
     isClientReady = false;
     setTimeout(() => client.initialize(), 5000);
 });
-
+(async () => {
+  try {
+    await client.initialize();
+  } catch (err) {
+    console.error('❌ Erreur init Puppeteer:', err);
+  }
+})();
 // Status endpoint
 app.get("/whatsapp-status", (req, res) => {
     console.log("📡 Status request =>", { connected: isConnected, hasQR: !!lastQrCode });
