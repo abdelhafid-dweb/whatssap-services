@@ -2,14 +2,12 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const qrcodeTerminal = require('qrcode-terminal');
-const QRCode = require('qrcode');
+const QRCode = require('qrcode'); // for base64 QR
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = 3000;
 
 app.use(cors({ origin: 'https://backoff.travel4you.ma' }));
 app.use(express.json());
@@ -20,109 +18,81 @@ let isConnected = false;
 let isClientReady = false;
 let lastQrCode = null;
 
-const authPath = path.join(__dirname, '.wwebjs_auth');
-if (!fs.existsSync(authPath)) fs.mkdirSync(authPath);
-
-
 // Init WhatsApp client
 const client = new Client({
-    authStrategy: new LocalAuth({ clientId: "default" }),
+    authStrategy: new LocalAuth(),
     puppeteer: {
         headless: true,
         args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--single-process',
-            '--no-zygote'
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--single-process',
+          '--disable-gpu'
         ]
-    }
+      }
 });
 
 // QR Code generated
 client.on('qr', qr => {
-    console.log('📌 QR Code reçu, scanner avec WhatsApp :');
-    qrcodeTerminal.generate(qr, { small: true });
+    console.log('QR reçu:', qr);
+    // Correction ici: Utilisation de 'QRCode' avec une majuscule
     QRCode.toDataURL(qr, (err, url) => {
-        if (err) console.error('❌ Erreur génération QR code:', err);
-        else lastQrCode = url;
+        if (err) {
+            console.error('Erreur génération QR code:', err);
+            lastQrCode = null;
+        } else {
+            lastQrCode = url;
+            isConnected = false;
+        }
     });
 });
-client.on('authenticated', () => {
-    console.log('🔐 Authentifié avec succès');
-});
-// Auth failure
-client.on('auth_failure', msg => {
-    console.error('❌ Échec d\'authentification:', msg);
-    isConnected = false;
-    lastQrCode = null;
-});
 
-// Ready
-client.on('ready', async () => {
+// WhatsApp ready
+client.on('ready', () => {
     console.log('✅ Le client est prêt ! Connexion établie.');
     isConnected = true;
     isClientReady = true;
     lastQrCode = null;
-
-    try {
-        await syncAllContacts();
-        console.log('🔄 Synchronisation initiale terminée.');
-    } catch (err) {
-        console.error('❌ Erreur syncAllContacts:', err.message);
-    }
-
-    // Process unread messages
-    try {
-        const chats = await client.getChats();
-        for (const chat of chats) {
-            if (chat.unreadCount > 0) {
-                const messages = await chat.fetchMessages({ limit: chat.unreadCount });
-                for (const msg of messages) await processMessageAndSendToDjango(msg);
-                await chat.sendSeen();
-            }
-        }
-        console.log('📩 Messages non lus traités.');
-    } catch (err) {
-        console.error('❌ Erreur traitement messages non lus:', err);
-    }
-
-    // Sync contacts every 2 minutes
+    syncAllContacts();
     setInterval(syncAllContacts, 2 * 60 * 1000);
 });
 
+// Auth events
+client.on('authenticated', () => {
+    console.log('🔐 Authentifié avec succès');
+});
 
+client.on('auth_failure', msg => {
+    console.error('❌ Échec d\'authentification', msg);
+    isConnected = false;
+    lastQrCode = null;
+});
 
 client.on('disconnected', reason => {
-    console.log('⚠️ Déconnecté de WhatsApp:', reason);
+    console.log('⚠️ Déconnecté de WhatsApp', reason);
     isConnected = false;
     isClientReady = false;
-    setTimeout(() => client.initialize(), 5000);
+    client.initialize();
 });
-(async () => {
-  try {
-    await client.initialize();
-  } catch (err) {
-    console.error('❌ Erreur init Puppeteer:', err);
-  }
-})();
+
 // Status endpoint
 app.get("/whatsapp-status", (req, res) => {
     console.log("📡 Status request =>", { connected: isConnected, hasQR: !!lastQrCode });
     res.json({ connected: isConnected, hasQR: !!lastQrCode, qr: lastQrCode });
 });
-
 async function safeDestroy() {
     try {
-        await client.destroy();
+      await client.destroy();
     } catch (e) {
-        console.warn('Erreur lors de destroy, tentative dans 2s', e.message);
-        await new Promise(res => setTimeout(res, 2000));
-        await client.destroy();
+      console.warn('Erreur lors de destroy, tentative dans 2s', e.message);
+      await new Promise(res => setTimeout(res, 2000));
+      await client.destroy();
     }
-}
-
+  }
 // Disconnect endpoint
 app.post("/whatsapp-disconnect", async (req, res) => {
     try {
@@ -131,7 +101,7 @@ app.post("/whatsapp-disconnect", async (req, res) => {
         lastQrCode = null;
         setTimeout(() => {
             client.initialize();
-        }, 2000); // 2 secondes, ajustable
+          }, 2000); // 2 secondes, ajustable
         res.json({ status: "disconnected" });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -144,9 +114,6 @@ const DJANGO_API_URL = 'https://ts.travel4you.ma/api/receive-message/';
 // Process and forward incoming messages
 async function processMessageAndSendToDjango(msg) {
     if (msg.fromMe) return;
-
-    // Ajout d'un log pour confirmer que la fonction est appelée
-    console.log(`[processMessageAndSendToDjango] Traitement d'un message de ${msg.from}`);
 
     let messageBody = '';
 
@@ -245,48 +212,47 @@ app.get('/send-relance-payer', (req, res) => {
     sendRelancePayer();
     res.json({ status: 'Relances paiement envoyées' });
 });
-
 app.post("/relance-pub", async (req, res) => {
     const { message, contacts } = req.body;
-
+  
     if (!message || !message.trim()) {
-        return res.status(400).json({ message: "Le message est requis." });
+      return res.status(400).json({ message: "Le message est requis." });
     }
     if (!Array.isArray(contacts) || contacts.length === 0) {
-        return res.status(400).json({ message: "Aucun contact fourni." });
+      return res.status(400).json({ message: "Aucun contact fourni." });
     }
-
+  
     console.log(`📢 Envoi relance à ${contacts.length} contacts...`);
-
+  
     let sent = [];
     let failed = [];
-
+  
     for (let number of contacts) {
-        // Formatage international si nécessaire
-        let phone = number.replace(/\D/g, ""); // supprimer tout sauf chiffres
-        if (!phone.endsWith("@c.us")) {
-            phone = `${phone}@c.us`;
-        }
-
-        try {
-            await client.sendMessage(phone, message);
-            console.log(`✅ Message envoyé à ${number}`);
-            sent.push(number);
-        } catch (err) {
-            console.error(`❌ Échec envoi à ${number}, err.message`);
-            failed.push(number);
-        }
+      // Formatage international si nécessaire
+      let phone = number.replace(/\D/g, ""); // supprimer tout sauf chiffres
+      if (!phone.endsWith("@c.us")) {
+        phone = `${phone}@c.us`;
+      }
+  
+      try {
+        await client.sendMessage(phone, message);
+        console.log(`✅ Message envoyé à ${number}`);
+        sent.push(number);
+      } catch (err) {
+        console.error(`❌ Échec envoi à ${number}`, err.message);
+        failed.push(number);
+      }
     }
-
+  
     return res.json({
-        message: "Relance terminée",
-        sentCount: sent.length,
-        failedCount: failed.length,
-        sent,
-        failed,
+      message: "Relance terminée",
+      sentCount: sent.length,
+      failedCount: failed.length,
+      sent,
+      failed,
     });
-});
-
+  });
+  
 const DJANGO_SYNC_CONTACTS_URL = 'https://ts.travel4you.ma/api/sync_contacts/sync_contacts/';
 
 /**
@@ -295,25 +261,20 @@ const DJANGO_SYNC_CONTACTS_URL = 'https://ts.travel4you.ma/api/sync_contacts/syn
  */
 const syncAllContacts = async () => {
     console.log("Démarrage de la synchronisation des contacts WhatsApp...");
-    // Ajouter cette vérification pour éviter l'erreur
-    if (!client || !client.info) {
-        console.error("❌ Le client n'est pas prêt pour la synchronisation.");
-        return;
-    }
     try {
         const chats = await client.getChats();
         const contactsToSync = [];
 
         for (const chat of chats) {
-            if (chat.isGroup) continue;
+            if (chat.isGroup) continue; 
 
-            const number = chat.id.user;
+            const number = chat.id.user; 
             contactsToSync.push({
                 number: number,
-                direction: "sync"
+                direction: "sync" 
             });
         }
-        console.log("Type envoyé à Django:", Array.isArray(contactsToSync));
+        console.log("Type envoyé à Django:", Array.isArray(contactsToSync)); 
         console.log("Premier contact:", contactsToSync[0]);
 
         if (contactsToSync.length > 0) {
@@ -322,7 +283,7 @@ const syncAllContacts = async () => {
             const response = await axios.post(
                 DJANGO_SYNC_CONTACTS_URL,
                 contactsToSync,
-                { headers: { "Content-Type": "application/json", "Accept": "application/json" } }
+                { headers: { "Content-Type": "application/json" ,"Accept": "application/json"} }
             );
 
             console.log(`✅ Synchronisation terminée.`, response.data);
