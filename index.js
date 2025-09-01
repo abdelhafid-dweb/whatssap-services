@@ -12,7 +12,7 @@ const app = express();
 const port = 3000;
 
 // Middleware setup
-app.use(cors());
+app.use(cors({ origin: 'https://backoff.travel4you.ma' }));
 app.use(express.json());
 app.use(bodyParser.json());
 // Serve static files from the 'public' directory
