@@ -19,6 +19,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Connection state variables
 let isConnected = false;
 let isClientReady = false;
+let isAuthenticated = false;
 let lastQrCode = null;
 
 // Initialize WhatsApp client with headless Puppeteer for container environments
@@ -49,6 +50,7 @@ client.on('qr', qr => {
         } else {
             lastQrCode = url;
             isConnected = false;
+            isAuthenticated = false;
         }
     });
 });
@@ -58,6 +60,7 @@ client.on('ready', () => {
     console.log('✅ Client is ready! Connection established. Setting status to connected.');
     isConnected = true;
     isClientReady = true;
+    isAuthenticated = true; // The client is also authenticated at this point
     lastQrCode = null;
     syncAllContacts();
     // Schedule periodic contact sync
@@ -67,12 +70,14 @@ client.on('ready', () => {
 // Event handler for authentication
 client.on('authenticated', () => {
     console.log('🔐 Successfully authenticated, waiting for client ready event...');
+    isAuthenticated = true;
 });
 
 // Event handler for authentication failure
 client.on('auth_failure', msg => {
     console.error('❌ Authentication failed', msg);
     isConnected = false;
+    isAuthenticated = false;
     lastQrCode = null;
 });
 
@@ -81,6 +86,7 @@ client.on('disconnected', reason => {
     console.log('⚠️ Disconnected from WhatsApp', reason);
     isConnected = false;
     isClientReady = false;
+    isAuthenticated = false;
     client.initialize();
 });
 
@@ -88,8 +94,8 @@ client.on('disconnected', reason => {
 
 // Endpoint to get WhatsApp connection status and QR code
 app.get("/whatsapp-status", (req, res) => {
-    console.log("📡 Status request =>", { connected: isConnected, hasQR: !!lastQrCode });
-    res.json({ connected: isConnected, hasQR: !!lastQrCode, qr: lastQrCode });
+    console.log("📡 Status request =>", { connected: isConnected, authenticated: isAuthenticated, hasQR: !!lastQrCode });
+    res.json({ connected: isConnected, authenticated: isAuthenticated, hasQR: !!lastQrCode, qr: lastQrCode });
 });
 
 // Function to safely destroy the client instance
@@ -108,6 +114,7 @@ app.post("/whatsapp-disconnect", async (req, res) => {
     try {
         await safeDestroy();
         isConnected = false;
+        isAuthenticated = false;
         lastQrCode = null;
         setTimeout(() => {
             client.initialize();
