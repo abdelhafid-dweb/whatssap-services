@@ -124,7 +124,33 @@ app.post("/whatsapp-disconnect", async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+app.post('/whatsapp-clear-session', async (req, res) => {
+    try {
+        console.log('🗑️ Clearing WhatsApp session files...');
+        // The default session path for LocalAuth is ./.wwebjs_auth
+        const sessionPath = path.join(__dirname, '.wwebjs_auth');
+        
+        // Remove the session directory
+        if (fs.existsSync(sessionPath)) {
+             rimraf.sync(sessionPath);
+            console.log('✅ Session files removed successfully.');
+        } else {
+            console.log('⚠️ No session files found to clear.');
+        }
 
+        // Restart the client to generate a new QR code
+        await safeDestroy();
+        isConnected = false;
+        isAuthenticated = false;
+        lastQrCode = null;
+        client.initialize();
+
+        res.json({ status: 'Session cleared. Client is restarting to generate a new QR code.' });
+    } catch (err) {
+        console.error('❌ Error clearing session:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
 // Django API URL
 const DJANGO_API_URL = 'https://ts.travel4you.ma/api/receive-message/';
 
