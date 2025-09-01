@@ -121,6 +121,9 @@ const DJANGO_API_URL = 'https://ts.travel4you.ma/api/receive-message/';
 async function processMessageAndSendToDjango(msg) {
     if (msg.fromMe) return;
 
+    // Ajout d'un log pour confirmer que la fonction est appelée
+    console.log(`[processMessageAndSendToDjango] Traitement d'un message de ${msg.from}`);
+
     let messageBody = '';
 
     if (msg.hasMedia) {
@@ -168,7 +171,11 @@ async function processMessageAndSendToDjango(msg) {
 }
 
 // Listen to messages
-client.on('message', processMessageAndSendToDjango);
+client.on('message', msg => {
+    // Log pour confirmer la réception d'un nouveau message
+    console.log(`[client.on('message')] Nouveau message reçu. Appel de processMessageAndSendToDjango.`);
+    processMessageAndSendToDjango(msg);
+});
 
 // On ready, process unread messages
 client.on('ready', async () => {
@@ -268,6 +275,11 @@ const DJANGO_SYNC_CONTACTS_URL = 'https://ts.travel4you.ma/api/sync_contacts/syn
  */
 const syncAllContacts = async () => {
     console.log("Démarrage de la synchronisation des contacts WhatsApp...");
+    // Ajouter cette vérification pour éviter l'erreur
+    if (!client || !client.info) {
+        console.error("❌ Le client n'est pas prêt pour la synchronisation.");
+        return;
+    }
     try {
         const chats = await client.getChats();
         const contactsToSync = [];
