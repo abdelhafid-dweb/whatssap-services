@@ -17,6 +17,7 @@ app.use(bodyParser.json());
 let isConnected = false;
 let isClientReady = false;
 let lastQrCode = null;
+let syncInterval = null; // Variable pour stocker l'ID de l'intervalle
 
 // Init WhatsApp client
 const client = new Client({
@@ -56,8 +57,18 @@ client.on('ready', () => {
     isConnected = true;
     isClientReady = true;
     lastQrCode = null;
-    syncAllContacts();
-    setInterval(syncAllContacts, 2 * 60 * 1000);
+
+    // S'assurer qu'un seul intervalle de synchronisation est actif
+    if (syncInterval) {
+        clearInterval(syncInterval);
+    }
+    
+    // Attendre quelques secondes avant la première synchronisation
+    setTimeout(() => {
+        syncAllContacts();
+        // Démarrer l'intervalle après la première synchronisation réussie
+        syncInterval = setInterval(syncAllContacts, 2 * 60 * 1000);
+    }, 5000); // 5 secondes de délai
 });
 
 // Auth events
@@ -65,8 +76,8 @@ client.on('authenticated', () => {
     console.log('🔐 Authentifié avec succès');
     // FIX: Update state variables immediately upon successful authentication
     isConnected = true;
-    isClientReady = true;
     lastQrCode = null;
+    // Ne PAS définir isClientReady ici. Elle doit être définie dans 'ready'.
 });
 
 client.on('auth_failure', msg => {
@@ -79,6 +90,11 @@ client.on('disconnected', reason => {
     console.log('⚠️ Déconnecté de WhatsApp', reason);
     isConnected = false;
     isClientReady = false;
+    // Annuler l'intervalle de synchronisation si le client est déconnecté
+    if (syncInterval) {
+        clearInterval(syncInterval);
+        syncInterval = null;
+    }
     // Re-initialize the client to get a new QR code
     client.initialize();
 });
