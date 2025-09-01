@@ -23,6 +23,9 @@ let isConnected = false;
 let isClientReady = false;
 let isAuthenticated = false;
 let lastQrCode = null;
+let reconnecting = false;
+let connectionTimeout = null;
+
 
 // Initialize WhatsApp client with headless Puppeteer for container environments
 const client = new Client({
@@ -73,6 +76,12 @@ client.on('ready', () => {
 client.on('authenticated', () => {
     console.log('🔐 Successfully authenticated, waiting for client ready event...');
     isAuthenticated = true;
+    connectionTimeout = setTimeout(() => {
+        if (!isClientReady) {
+            console.warn('⚠️ Le client est bloqué après l\'authentification. Il se peut qu\'il y ait un problème de réseau ou un long délai de synchronisation.60 seconds');
+        }
+    }, 60000); // 60 seconds
+    
 });
 
 // Event handler for authentication failure
@@ -89,9 +98,20 @@ client.on('disconnected', reason => {
     isConnected = false;
     isClientReady = false;
     isAuthenticated = false;
-    client.initialize();
-});
+    if (connectionTimeout) clearTimeout(connectionTimeout);
 
+    if (!reconnecting) {
+        reconnecting = true;
+        setTimeout(() => {
+            console.log('Attempting to re-initialize client...');
+            client.initialize();
+            reconnecting = false;
+        }, 5000); // Wait for 5 seconds before re-initializing
+    }
+});
+client.on('change_state', state => {
+    console.log('Current state changed:', state);
+});
 // --- API Endpoints ---
 
 // Endpoint to get WhatsApp connection status and QR code
