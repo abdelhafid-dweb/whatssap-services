@@ -5,9 +5,11 @@ const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
 app.use(cors({ origin: 'https://backoff.travel4you.ma' }));
 app.use(express.json());
@@ -17,86 +19,86 @@ app.use(bodyParser.json());
 let isConnected = false;
 let isClientReady = false;
 let lastQrCode = null;
-let syncInterval = null; // Variable pour stocker l'ID de l'intervalle
+
+const authPath = path.join(__dirname, '.wwebjs_auth');
+if (!fs.existsSync(authPath)) fs.mkdirSync(authPath);
+
 
 // Init WhatsApp client
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({ clientId: "default" }),
     puppeteer: {
         headless: true,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
+            '--disable-gpu',
             '--single-process',
-            '--disable-gpu'
+            '--no-zygote'
         ]
     }
 });
 
 // QR Code generated
 client.on('qr', qr => {
-    console.log('QR reçu:', qr);
+    console.log('📌 QR Code reçu, scanner avec WhatsApp :');
+    qrcodeTerminal.generate(qr, { small: true });
     QRCode.toDataURL(qr, (err, url) => {
-        if (err) {
-            console.error('Erreur génération QR code:', err);
-            lastQrCode = null;
-        } else {
-            lastQrCode = url;
-            isConnected = false;
-        }
+        if (err) console.error('❌ Erreur génération QR code:', err);
+        else lastQrCode = url;
     });
 });
+client.on('authenticated', () => {
+    console.log('🔐 Authentifié avec succès');
+});
+// Auth failure
+client.on('auth_failure', msg => {
+    console.error('❌ Échec d\'authentification:', msg);
+    isConnected = false;
+    lastQrCode = null;
+});
 
-// WhatsApp is ready to use
-client.on('ready', () => {
+// Ready
+client.on('ready', async () => {
     console.log('✅ Le client est prêt ! Connexion établie.');
     isConnected = true;
     isClientReady = true;
     lastQrCode = null;
 
-    // S'assurer qu'un seul intervalle de synchronisation est actif
-    if (syncInterval) {
-        clearInterval(syncInterval);
+    try {
+        await syncAllContacts();
+        console.log('🔄 Synchronisation initiale terminée.');
+    } catch (err) {
+        console.error('❌ Erreur syncAllContacts:', err.message);
     }
-    
-    // Attendre quelques secondes avant la première synchronisation
-    setTimeout(() => {
-        syncAllContacts();
-        // Démarrer l'intervalle après la première synchronisation réussie
-        syncInterval = setInterval(syncAllContacts, 2 * 60 * 1000);
-    }, 5000); // 5 secondes de délai
+
+    // Process unread messages
+    try {
+        const chats = await client.getChats();
+        for (const chat of chats) {
+            if (chat.unreadCount > 0) {
+                const messages = await chat.fetchMessages({ limit: chat.unreadCount });
+                for (const msg of messages) await processMessageAndSendToDjango(msg);
+                await chat.sendSeen();
+            }
+        }
+        console.log('📩 Messages non lus traités.');
+    } catch (err) {
+        console.error('❌ Erreur traitement messages non lus:', err);
+    }
+
+    // Sync contacts every 2 minutes
+    setInterval(syncAllContacts, 2 * 60 * 1000);
 });
 
-// Auth events
-client.on('authenticated', () => {
-    console.log('🔐 Authentifié avec succès');
-    // FIX: Update state variables immediately upon successful authentication
-    isConnected = true;
-    lastQrCode = null;
-    // Ne PAS définir isClientReady ici. Elle doit être définie dans 'ready'.
-});
 
-client.on('auth_failure', msg => {
-    console.error('❌ Échec d\'authentification', msg);
-    isConnected = false;
-    lastQrCode = null;
-});
 
 client.on('disconnected', reason => {
-    console.log('⚠️ Déconnecté de WhatsApp', reason);
+    console.log('⚠️ Déconnecté de WhatsApp:', reason);
     isConnected = false;
     isClientReady = false;
-    // Annuler l'intervalle de synchronisation si le client est déconnecté
-    if (syncInterval) {
-        clearInterval(syncInterval);
-        syncInterval = null;
-    }
-    // Re-initialize the client to get a new QR code
-    client.initialize();
+    setTimeout(() => client.initialize(), 5000);
 });
 
 // Status endpoint
@@ -187,11 +189,7 @@ async function processMessageAndSendToDjango(msg) {
 }
 
 // Listen to messages
-client.on('message', msg => {
-    // Log pour confirmer la réception d'un nouveau message
-    console.log(`[client.on('message')] Nouveau message reçu. Appel de processMessageAndSendToDjango.`);
-    processMessageAndSendToDjango(msg);
-});
+client.on('message', processMessageAndSendToDjango);
 
 // On ready, process unread messages
 client.on('ready', async () => {
