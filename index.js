@@ -61,17 +61,8 @@ client.on('qr', qr => {
     });
 });
 
-client.on('authenticated', () => {
-    console.log('🔐 Authentifié, en attente de ready...');
-    isAuthenticated = true;
-    connectionTimeout = setTimeout(() => {
-        if (!isClientReady) {
-            console.warn('⚠️ Bloqué après authentification (ready manquant).');
-        }
-    }, 60000);
-});
-
-client.on('ready', () => {
+// Event handler for a successful connection
+const handleReady = () => {
     console.log('✅ Client prêt et connecté.');
     isConnected = true;
     isClientReady = true;
@@ -81,6 +72,22 @@ client.on('ready', () => {
 
     syncAllContacts();
     setInterval(syncAllContacts, 2 * 60 * 1000);
+};
+
+client.on('ready', handleReady);
+
+// Event handler for authentication
+client.on('authenticated', () => {
+    console.log('🔐 Authentifié, en attente de ready...');
+    isAuthenticated = true;
+    // Ajout d'une logique de récupération robuste
+    connectionTimeout = setTimeout(async () => {
+        if (!isClientReady) {
+            console.warn('⚠️ Bloqué après authentification (ready manquant). Forcing client re-initialization...');
+            await safeDestroy();
+            client.initialize();
+        }
+    }, 60000); // 60 secondes de délai
 });
 
 client.on('auth_failure', msg => {
@@ -136,6 +143,10 @@ app.get("/whatsapp-diagnose", async (req, res) => {
             error: err.message
         });
     }
+});
+
+app.get('/ping', (req, res) => {
+    res.status(200).json({ status: 'Server is running', timestamp: new Date() });
 });
 
 async function safeDestroy() {
@@ -282,20 +293,6 @@ app.get('/whatsapp-sync-contacts', async (req, res) => {
     await syncAllContacts();
     res.json({ status: 'Sync terminé.' });
 });
-
-// --- Watchdog pour corriger blocage CONNECTED sans ready ---
-setInterval(async () => {
-    try {
-        const state = await client.getState();
-        if (state === "CONNECTED" && !isClientReady) {
-            console.warn("⚠️ Client bloqué en CONNECTED sans ready → relance forcée...");
-            await safeDestroy();
-            setTimeout(() => client.initialize(), 2000);
-        }
-    } catch (e) {
-        console.error("❌ Watchdog error:", e.message);
-    }
-}, 60000); // toutes les 60s
 
 // --- Lancement ---
 client.initialize();
