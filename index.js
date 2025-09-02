@@ -11,22 +11,21 @@ const rimraf = require('rimraf');
 const app = express();
 const port = 3000;
 
-// Middleware setup
+// Middleware
 app.use(cors({ origin: 'https://backoff.travel4you.ma' }));
 app.use(express.json());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Connection state variables
+// --- État du client ---
 let isConnected = false;
 let isClientReady = false;
 let isAuthenticated = false;
 let lastQrCode = null;
 let reconnecting = false;
 let connectionTimeout = null;
-let syncInterval = null;
 
-// Initialize WhatsApp client
+// --- Initialisation du client WhatsApp ---
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -47,13 +46,12 @@ const client = new Client({
     }
 });
 
-// --- WhatsApp Event Handlers ---
-
+// --- Gestion des événements WhatsApp ---
 client.on('qr', qr => {
-    console.log('QR Code received');
+    console.log('QR Code reçu.');
     QRCode.toDataURL(qr, (err, url) => {
         if (err) {
-            console.error('Error generating QR code:', err);
+            console.error('Erreur QR:', err);
             lastQrCode = null;
         } else {
             lastQrCode = url;
@@ -64,35 +62,45 @@ client.on('qr', qr => {
 });
 
 client.on('authenticated', () => {
-    console.log('🔐 Successfully authenticated, waiting for ready...');
+    console.log('🔐 Authentifié, en attente de ready...');
     isAuthenticated = true;
     connectionTimeout = setTimeout(() => {
         if (!isClientReady) {
-            console.warn('⚠️ Client stuck after authentication (possible sync delay or network issue).');
+            console.warn('⚠️ Bloqué après authentification (ready manquant).');
         }
     }, 60000);
 });
 
+client.on('ready', () => {
+    console.log('✅ Client prêt et connecté.');
+    isConnected = true;
+    isClientReady = true;
+    isAuthenticated = true;
+    lastQrCode = null;
+    if (connectionTimeout) clearTimeout(connectionTimeout);
+
+    syncAllContacts();
+    setInterval(syncAllContacts, 2 * 60 * 1000);
+});
+
 client.on('auth_failure', msg => {
-    console.error('❌ Authentication failed', msg);
+    console.error('❌ Auth échouée:', msg);
     isConnected = false;
     isAuthenticated = false;
     lastQrCode = null;
 });
 
 client.on('disconnected', reason => {
-    console.log('⚠️ Disconnected from WhatsApp:', reason);
+    console.log('⚠️ Déconnecté:', reason);
     isConnected = false;
     isClientReady = false;
     isAuthenticated = false;
-
     if (connectionTimeout) clearTimeout(connectionTimeout);
-    if (syncInterval) clearInterval(syncInterval);
 
     if (!reconnecting) {
         reconnecting = true;
         setTimeout(() => {
-            console.log('Attempting to re-initialize client...');
+            console.log('♻️ Tentative de reconnexion...');
             client.initialize();
             reconnecting = false;
         }, 5000);
@@ -100,50 +108,11 @@ client.on('disconnected', reason => {
 });
 
 client.on('change_state', state => {
-    console.log('Current state changed:', state);
+    console.log('État actuel:', state);
 });
 
-client.on('ready', async () => {
-    console.log('✅ Client is ready! Connection established.');
-    isConnected = true;
-    isClientReady = true;
-    isAuthenticated = true;
-    lastQrCode = null;
-
-    if (connectionTimeout) clearTimeout(connectionTimeout);
-
-    // Prevent multiple intervals
-    if (syncInterval) clearInterval(syncInterval);
-    syncInterval = setInterval(syncAllContacts, 2 * 60 * 1000);
-
-    // Initial sync
-    await syncAllContacts();
-
-    // Process unread messages
-    console.log('🔍 Checking for unread messages...');
-    try {
-        const chats = await client.getChats();
-        for (const chat of chats) {
-            if (chat.unreadCount > 0) {
-                console.log(`📥 ${chat.unreadCount} unread messages from ${chat.name} (${chat.id.user})`);
-                const messages = await chat.fetchMessages({ limit: chat.unreadCount });
-                for (const msg of messages) {
-                    await processMessageAndSendToDjango(msg);
-                }
-                await chat.sendSeen();
-                console.log(`✅ ${chat.name} marked as read.`);
-            }
-        }
-    } catch (error) {
-        console.error("❌ Error retrieving unread messages:", error);
-    }
-    console.log('✅ Ready processing finished.');
-});
-
-// --- API Endpoints ---
-
+// --- ENDPOINTS API ---
 app.get("/whatsapp-status", (req, res) => {
-    console.log("📡 Status request =>", { connected: isConnected, authenticated: isAuthenticated, hasQR: !!lastQrCode });
     res.json({ connected: isConnected, authenticated: isAuthenticated, hasQR: !!lastQrCode, qr: lastQrCode });
 });
 
@@ -155,11 +124,9 @@ app.get("/whatsapp-diagnose", async (req, res) => {
             isAuthenticated,
             isClientReady,
             lastQrCode: !!lastQrCode,
-            clientState,
-            message: "Detailed client state according to whatsapp-web.js."
+            clientState
         });
     } catch (err) {
-        console.error('❌ Error getting client state:', err.message);
         res.status(500).json({
             isConnected,
             isAuthenticated,
@@ -173,12 +140,10 @@ app.get("/whatsapp-diagnose", async (req, res) => {
 
 async function safeDestroy() {
     try {
-        client.removeAllListeners();
         await client.destroy();
     } catch (e) {
-        console.warn('Error during destroy, retrying in 2s:', e.message);
+        console.warn('Erreur destroy, retry dans 2s:', e.message);
         await new Promise(res => setTimeout(res, 2000));
-        client.removeAllListeners();
         await client.destroy();
     }
 }
@@ -199,152 +164,140 @@ app.post("/whatsapp-disconnect", async (req, res) => {
 
 app.post('/whatsapp-clear-session', async (req, res) => {
     try {
-        console.log('🗑️ Clearing WhatsApp session files...');
+        console.log('🗑️ Suppression des sessions...');
         const sessionPath = path.join(__dirname, '.wwebjs_auth');
         if (fs.existsSync(sessionPath)) {
             rimraf.sync(sessionPath);
-            console.log('✅ Session files removed successfully.');
-        } else {
-            console.log('⚠️ No session files found to clear.');
+            console.log('✅ Sessions supprimées.');
         }
-
         await safeDestroy();
         isConnected = false;
         isAuthenticated = false;
         isClientReady = false;
         lastQrCode = null;
-
-        setTimeout(() => client.initialize(), 2000);
-        res.json({ status: 'Session cleared. Restarting client...' });
+        client.initialize();
+        res.json({ status: 'Session cleared, nouveau QR généré.' });
     } catch (err) {
-        console.error('❌ Error clearing session:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// --- Message Processing ---
-
+// --- Messages entrants & Django ---
 const DJANGO_API_URL = 'https://ts.travel4you.ma/api/receive-message/';
 
 async function processMessageAndSendToDjango(msg) {
     if (msg.fromMe) return;
-
     let messageBody = '';
+
     if (msg.hasMedia) {
-        const typeMap = {
-            image: 'Image',
-            audio: 'Audio',
-            video: 'Vidéo',
-            document: 'Document',
-            ptt: 'Voice Message',
-            sticker: 'Sticker'
-        };
+        const typeMap = { image: 'Image', audio: 'Audio', video: 'Vidéo', document: 'Document', ptt: 'Voice Message', sticker: 'Sticker' };
         messageBody = typeMap[msg.type] || 'Other media';
-        console.log(`📩 New media from ${msg.from}: ${msg.type}`);
     } else {
-        const textMessage = msg.body.trim();
-        if (!textMessage) return;
-        messageBody = textMessage;
-        console.log(`💬 New text from ${msg.from}: "${textMessage}"`);
+        const text = msg.body.trim();
+        if (!text) return;
+        messageBody = text;
     }
 
     try {
-        const response = await axios.post(DJANGO_API_URL, {
-            sender_number: msg.from,
-            message_body: messageBody
-        }, { headers: { 'Content-Type': 'application/json' } });
-        console.log("✅ Sent to Django:", response.data);
+        const response = await axios.post(DJANGO_API_URL, { sender_number: msg.from, message_body: messageBody });
+        console.log("✅ Envoyé à Django:", response.data);
     } catch (error) {
-        if (error.response) {
-            console.error(`❌ Django error ${error.response.status}:`, error.response.data);
-        } else {
-            console.error("❌ Django send failed:", error.message);
-        }
+        console.error("❌ Erreur Django:", error.message);
     }
 }
 
 client.on('message', processMessageAndSendToDjango);
 
-// --- Scheduled Tasks ---
+client.on('ready', async () => {
+    console.log('🔍 Vérif des messages non lus...');
+    try {
+        const chats = await client.getChats();
+        for (const chat of chats) {
+            if (chat.unreadCount > 0) {
+                const messages = await chat.fetchMessages({ limit: chat.unreadCount });
+                for (const msg of messages) await processMessageAndSendToDjango(msg);
+                await chat.sendSeen();
+            }
+        }
+    } catch (error) {
+        console.error("❌ Erreur récupération non lus:", error);
+    }
+});
 
+// --- Tâches planifiées ---
 const sendRelancePayer = async () => {
     try {
         const response = await axios.get('https://ts.travel4you.ma/paiement-tours/clients-a-relancer/');
-        for (const c of response.data) {
-            const phone = c.client_phone.replace(/\D/g, '');
-            const msg = `Bonjour ${c.client_name}, il vous reste ${c.balance_remaining} MAD à payer pour : ${c.tour_title}. Merci de régulariser.`;
-            try {
-                await client.sendMessage(`${phone}@c.us`, msg);
-                console.log(`✅ Reminder sent to ${phone}`);
-            } catch (e) {
-                console.error(`❌ Error sending reminder to ${phone}:`, e.message);
-            }
+        for (const clientData of response.data) {
+            const phone = clientData.client_phone.replace(/\D/g, '') + "@c.us";
+            const message = `Bonjour ${clientData.client_name}, il vous reste ${clientData.balance_remaining} MAD à payer pour les services : ${clientData.tour_title}. Merci de régulariser.`;
+            await client.sendMessage(phone, message);
         }
     } catch (err) {
-        console.error('❌ Error retrieving reminder list:', err.message);
+        console.error('❌ Erreur relance:', err.message);
     }
 };
 
 app.get('/send-relance-payer', (req, res) => {
     sendRelancePayer();
-    res.json({ status: 'Payment reminders triggered' });
+    res.json({ status: 'Relances envoyées' });
 });
 
 app.post("/relance-pub", async (req, res) => {
     const { message, contacts } = req.body;
-    if (!message?.trim() || !Array.isArray(contacts) || contacts.length === 0) {
-        return res.status(400).json({ message: "Message and contacts required" });
-    }
+    if (!message || !contacts?.length) return res.status(400).json({ message: "Message et contacts requis." });
 
     let sent = [], failed = [];
     for (let number of contacts) {
         let phone = number.replace(/\D/g, "");
-        if (!phone.endsWith("@c.us")) phone = `${phone}@c.us`;
+        if (!phone.endsWith("@c.us")) phone += "@c.us";
         try {
             await client.sendMessage(phone, message);
             sent.push(number);
-            console.log(`✅ Sent to ${number}`);
-        } catch (e) {
+        } catch {
             failed.push(number);
-            console.error(`❌ Failed to send to ${number}`, e.message);
         }
     }
-    res.json({ message: "Broadcast finished", sentCount: sent.length, failedCount: failed.length, sent, failed });
+    res.json({ sentCount: sent.length, failedCount: failed.length, sent, failed });
 });
 
-// --- Contact Sync ---
-
+// --- Sync des contacts ---
 const DJANGO_SYNC_CONTACTS_URL = 'https://ts.travel4you.ma/api/sync_contacts/sync_contacts/';
 
 const syncAllContacts = async () => {
-    console.log("🔄 Syncing contacts...");
     try {
         const chats = await client.getChats();
-        const contacts = chats.filter(c => !c.isGroup).map(c => ({ number: c.id.user, direction: 'sync' }));
-        if (contacts.length > 0) {
-            await axios.post(DJANGO_SYNC_CONTACTS_URL, contacts, {
-                headers: { "Content-Type": "application/json", "Accept": "application/json" }
-            });
-            console.log(`✅ Synced ${contacts.length} contacts.`);
-        } else {
-            console.log("No contacts to sync.");
+        const contactsToSync = chats.filter(c => !c.isGroup).map(c => ({ number: c.id.user, direction: "sync" }));
+        if (contactsToSync.length > 0) {
+            await axios.post(DJANGO_SYNC_CONTACTS_URL, contactsToSync);
+            console.log(`✅ ${contactsToSync.length} contacts syncés.`);
         }
     } catch (err) {
-        console.error('❌ Sync error:', err.message);
+        console.error('❌ Erreur sync contacts:', err.message);
     }
 };
 
 app.get('/whatsapp-sync-contacts', async (req, res) => {
-    if (!isClientReady) {
-        return res.status(400).json({ status: 'error', message: 'WhatsApp client not ready. Please scan QR.' });
-    }
+    if (!isClientReady) return res.status(400).json({ status: 'error', message: 'Client non prêt. Scanner QR.' });
     await syncAllContacts();
-    res.json({ status: 'Synchronization completed.' });
+    res.json({ status: 'Sync terminé.' });
 });
 
-// --- Start Client + Server ---
+// --- Watchdog pour corriger blocage CONNECTED sans ready ---
+setInterval(async () => {
+    try {
+        const state = await client.getState();
+        if (state === "CONNECTED" && !isClientReady) {
+            console.warn("⚠️ Client bloqué en CONNECTED sans ready → relance forcée...");
+            await safeDestroy();
+            setTimeout(() => client.initialize(), 2000);
+        }
+    } catch (e) {
+        console.error("❌ Watchdog error:", e.message);
+    }
+}, 60000); // toutes les 60s
+
+// --- Lancement ---
 client.initialize();
 const actualPort = process.env.PORT || port;
-app.listen(actualPort, () => {
-    console.log(`🚀 Server listening on http://localhost:${actualPort}`);
-});
+app.listen(actualPort, () => console.log(`🚀 Serveur sur http://localhost:${actualPort}`));
